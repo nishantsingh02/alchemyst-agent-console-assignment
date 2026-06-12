@@ -9,17 +9,30 @@ import {
 } from '@/types/protocol';
 import { UIMessage, AgentMessage, MessageBlock, ToolBlock } from '@/types/ui';
 
+import { TraceEvent, TraceEventType } from '@/types/trace';
+
 interface ChatState {
   messages: UIMessage[];
   isConnected: boolean;
   lastSeq: number;
   socket: WebSocket | null;
   
+  // Trace Task
+  traceEvents: TraceEvent[];
+  highlightedEventId: string | null;
+  activeCorrelationId: string | null;
+  filter: string;
+  search: string;
+  
   // Actions
   connect: () => void;
   disconnect: () => void;
   sendUserMessage: (content: string) => void;
   processMessage: (message: ServerMessage) => void;
+  setHighlightedEvent: (id: string | null) => void;
+  setHighlightedCorrelation: (id: string | null) => void;
+  setFilter: (filter: string) => void;
+  setSearch: (search: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -27,11 +40,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isConnected: false,
   lastSeq: 0,
   socket: null,
+  traceEvents: [],
+  highlightedEventId: null,
+  activeCorrelationId: null,
+  filter: 'ALL',
+  search: '',
 
+  // Actions
   connect: () => {
     if (get().socket) return;
 
-    // connection with websocket server
     const ws = new WebSocket('ws://localhost:4747/ws');
 
     ws.onopen = () => {
@@ -49,7 +67,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
 
     ws.onclose = () => {
-      // Only clear state if this is the active socket
       if (get().socket === ws) {
         set({ isConnected: false, socket: null });
         console.log('Disconnected from agent-server');
@@ -68,27 +85,86 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ socket: null, isConnected: false });
     }
   },
+  setHighlightedEvent: (id) => {
+    const event = get().traceEvents.find(e => e.id === id);
+    set({ highlightedEventId: id, activeCorrelationId: event?.correlationId || null });
+  },
+  
+  setHighlightedCorrelation: (id) => {
+    const event = get().traceEvents.find(e => e.correlationId === id);
+    set({ activeCorrelationId: id, highlightedEventId: event?.id || null });
+  },
+
+  setFilter: (filter) => set({ filter }),
+  setSearch: (search) => set({ search }),
 
   sendUserMessage: (content: string) => {
     const { socket } = get();
     if (!socket) return;
 
-    // Add to UI
     set((state) => ({
-      messages: [...state.messages, { role: 'user', content }]
+      messages: [...state.messages, { role: 'user', content }],
+      traceEvents: [
+        ...state.traceEvents,
+        {
+          id: `user-${Date.now()}`,
+          type: 'USER_SENT',
+          timestamp: Date.now(),
+          data: { content }
+        }
+      ]
     }));
 
-    // Send to server
     const msg: ClientMessage = { type: 'USER_MESSAGE', content };
     socket.send(JSON.stringify(msg));
   },
 
   processMessage: (message: ServerMessage) => {
+    const now = Date.now();
     set({ lastSeq: message.seq });
 
+    // Handle Tracing (with Grouping)
+    set((state) => {
+      const newTraceEvents = [...state.traceEvents];
+      const lastEvent = newTraceEvents[newTraceEvents.length - 1];
+
+      let correlationId: string | undefined;
+      if ('stream_id' in message) correlationId = message.stream_id;
+      if ('call_id' in message) correlationId = message.call_id;
+
+      if (message.type === 'TOKEN' && lastEvent?.type === 'TOKEN' && lastEvent.data.stream_id === message.stream_id) {
+        // Group Tokens
+        lastEvent.tokenCount = (lastEvent.tokenCount || 1) + 1;
+        lastEvent.data.text += message.text;
+        lastEvent.duration = now - (lastEvent.startTime || lastEvent.timestamp);
+      } else {
+        newTraceEvents.push({
+          id: `seq-${message.seq}-${now}`,
+          type: message.type as TraceEventType,
+          timestamp: now,
+          seq: message.seq,
+          data: { ...message },
+          correlationId,
+          ...(message.type === 'TOKEN' ? { tokenCount: 1, startTime: now, duration: 0 } : {})
+        });
+      }
+      return { traceEvents: newTraceEvents };
+    });
+
+    // Handle Protocol/Chat State
     switch (message.type) {
       case 'PING':
-        get().socket?.send(JSON.stringify({ type: 'PONG', echo: (message as PingMessage).challenge }));
+        const pong = { type: 'PONG', echo: (message as PingMessage).challenge };
+        get().socket?.send(JSON.stringify(pong));
+        // Also trace the PONG
+        set(state => ({
+          traceEvents: [...state.traceEvents, {
+            id: `pong-${now}`,
+            type: 'PONG',
+            timestamp: now,
+            data: pong
+          }]
+        }));
         break;
 
       case 'TOKEN':
@@ -117,7 +193,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       case 'TOOL_CALL':
         const toolCall = message as ToolCallMessage;
-        // Acknowledge immediately (Task 1 requirement: within 2 seconds)
         get().socket?.send(JSON.stringify({ type: 'TOOL_ACK', call_id: toolCall.call_id }));
 
         set((state) => {
@@ -136,7 +211,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             call_id: toolCall.call_id,
             tool_name: toolCall.tool_name,
             args: toolCall.args,
-            status: 'acknowledged', // We just sent the ACK
+            status: 'acknowledged',
           });
 
           return { messages: newMessages };
@@ -164,8 +239,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return { messages: newMessages };
         });
         break;
-        
-      // Handle other message types (CONTEXT_SNAPSHOT, STREAM_END, etc.) in later tasks
     }
   },
 }));

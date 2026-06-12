@@ -18,9 +18,18 @@ This document outlines the engineering decisions and architectural rationale beh
 **Rationale:**
 - **Layout Stability (Task 1):** The requirement to "freeze" text when a tool call arrives is naturally handled by this architecture. When a `TOOL_CALL` arrives, we simply start a new block. The preceding text block remains unchanged, preventing any reflow or "jitter."
 - **Seamless Resumption:** When a `TOOL_RESULT` lands, the next `TOKEN` triggers a new text block. This ensures that tool cards are always correctly interleaved between the text that preceded and followed them.
-- **Scalability:** This approach makes Task 2 (Trace Timeline) easier, as each block maps directly to a sequence of protocol events.
+- **Bidirectional Highlighting (Task 2):** By tagging each block with a `call_id` or `stream_id`, we can easily correlate UI elements with technical trace events.
 
-## 3. Protocol Compliance & Timing
+## 3. Bidirectional Trace Highlighting & Scrolling
+
+**Decision:** Standardized on a `correlationId` (using `call_id` for tools and `stream_id` for tokens) to link the Chat View and Trace Timeline.
+
+**Rationale:**
+- **Cross-Panel Synchronization:** Using a shared ID in the global store allows both panels to respond to the same "active" state. Clicking a tool card in the chat updates the `activeCorrelationId`, which the timeline uses to highlight the corresponding technical log.
+- **Automated Navigation:** To fulfill the requirement that clicking a chat element should scroll the timeline, we assigned `id` attributes to timeline rows matching their unique event IDs. A `useEffect` hook in the timeline component monitors the highlighted event and calls `scrollIntoView()` for instant, hands-free navigation.
+- **Performance:** Highlighting is handled via CSS classes applied based on state, ensuring no expensive DOM re-renders are needed for the entire list when a single item is selected.
+
+## 4. Protocol Compliance & Timing
 
 **Decision:** Immediate, non-blocking `TOOL_ACK` and `PONG` responses.
 

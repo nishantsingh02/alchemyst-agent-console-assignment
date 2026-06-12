@@ -4,8 +4,18 @@ import { useEffect, useState, useRef } from 'react';
 import { useChatStore } from '@/store/useChatStore';
 import { UIMessage, AgentMessage, MessageBlock, ToolBlock } from '@/types/ui';
 
+import TraceTimeline from '@/components/TraceTimeline';
+
 export default function Home() {
-  const { messages, connect, disconnect, isConnected, sendUserMessage } = useChatStore();
+  const { 
+    messages, 
+    connect, 
+    disconnect, 
+    isConnected, 
+    sendUserMessage, 
+    activeCorrelationId, 
+    setHighlightedCorrelation 
+  } = useChatStore();
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -28,69 +38,105 @@ export default function Home() {
   };
 
   return (
-    <main className="flex flex-col h-screen max-w-5xl mx-auto p-4 md:p-8">
-      <header className="flex items-center justify-between mb-8 pb-4 border-b border-zinc-800">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight">Agent Console</h1>
-          <div className="flex items-center gap-2 mt-1">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-            <span className="text-xs text-zinc-400 uppercase tracking-widest font-medium">
-              {isConnected ? 'Backend Online' : 'Backend Offline'}
-            </span>
-          </div>
-        </div>
-      </header>
-
-      <div 
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto space-y-6 mb-6 pr-4 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent"
-      >
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[85%] ${msg.role === 'user' ? 'bg-zinc-800 p-4 rounded-2xl rounded-tr-none' : 'w-full'}`}>
-              {msg.role === 'user' ? (
-                <p className="text-sm leading-relaxed">{msg.content}</p>
-              ) : (
-                <div className="space-y-4">
-                  {(msg as AgentMessage).blocks.map((block, j) => (
-                    <RenderBlock key={j} block={block} />
-                  ))}
-                </div>
-              )}
+    <div className="flex h-screen bg-zinc-950 overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0">
+        {/* ... (header same) */}
+        <header className="flex items-center justify-between p-4 md:px-8 border-b border-zinc-800 shrink-0">
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">Agent Console</h1>
+            <div className="flex items-center gap-2 mt-1">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+              <span className="text-xs text-zinc-400 uppercase tracking-widest font-medium">
+                {isConnected ? 'Backend Online' : 'Backend Offline'}
+              </span>
             </div>
           </div>
-        ))}
-      </div>
+        </header>
 
-      <form onSubmit={handleSend} className="relative">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={isConnected ? "Message the agent..." : "Connecting to backend..."}
-          disabled={!isConnected}
-          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500/50 transition-all placeholder:text-zinc-600"
-        />
-        <button
-          type="submit"
-          disabled={!isConnected || !input.trim()}
-          className="absolute right-2 top-2 bottom-2 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-lg text-xs font-bold transition-colors uppercase tracking-wider"
+        <div 
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto space-y-6 p-4 md:p-8 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent"
         >
-          Send
-        </button>
-      </form>
-    </main>
+          {messages.map((msg, i) => (
+            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[85%] ${msg.role === 'user' ? 'bg-zinc-800 p-4 rounded-2xl rounded-tr-none' : 'w-full'}`}>
+                {msg.role === 'user' ? (
+                  <p className="text-sm leading-relaxed">{msg.content}</p>
+                ) : (
+                  <div className="space-y-4">
+                    {(msg as AgentMessage).blocks.map((block, j) => (
+                      <RenderBlock 
+                        key={j} 
+                        block={block} 
+                        isHighlighted={
+                          (block.type === 'tool' && activeCorrelationId === block.call_id) ||
+                          (block.type === 'text' && activeCorrelationId === (msg as AgentMessage).stream_id)
+                        }
+                        onSelect={() => {
+                          if (block.type === 'tool') {
+                            setHighlightedCorrelation(block.call_id);
+                          } else {
+                            setHighlightedCorrelation((msg as AgentMessage).stream_id);
+                          }
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* ... (form same) */}
+        <div className="p-4 md:px-8 pb-8 shrink-0">
+          <form onSubmit={handleSend} className="relative max-w-4xl mx-auto">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={isConnected ? "Message the agent..." : "Connecting to backend..."}
+              disabled={!isConnected}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500/50 transition-all placeholder:text-zinc-600"
+            />
+            <button
+              type="submit"
+              disabled={!isConnected || !input.trim()}
+              className="absolute right-2 top-2 bottom-2 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-lg text-xs font-bold transition-colors uppercase tracking-wider"
+            >
+              Send
+            </button>
+          </form>
+        </div>
+      </main>
+
+      <TraceTimeline />
+    </div>
   );
 }
 
-function RenderBlock({ block }: { block: MessageBlock }) {
+function RenderBlock({ block, isHighlighted, onSelect }: { 
+  block: MessageBlock; 
+  isHighlighted?: boolean;
+  onSelect?: () => void;
+}) {
   if (block.type === 'text') {
-    return <p className="text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">{block.content}</p>;
+    return (
+      <div 
+        className={`transition-colors rounded p-1 -m-1 ${isHighlighted ? 'bg-emerald-500/10 ring-1 ring-emerald-500/30' : ''}`}
+      >
+        <p className="text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">{block.content}</p>
+      </div>
+    );
   }
 
   const tool = block as ToolBlock;
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden my-2 shadow-sm">
+    <div 
+      onClick={onSelect}
+      className={`bg-zinc-900 border transition-all rounded-xl overflow-hidden my-2 shadow-sm cursor-pointer ${
+        isHighlighted ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-zinc-800'
+      }`}
+    >
       <div className="bg-zinc-800/50 px-4 py-2 border-b border-zinc-800 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="p-1 bg-emerald-500/10 rounded">
