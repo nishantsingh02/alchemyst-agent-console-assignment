@@ -1,0 +1,129 @@
+'use client';
+
+import { useEffect, useState, useRef } from 'react';
+import { useChatStore } from '@/store/useChatStore';
+import { UIMessage, AgentMessage, MessageBlock, ToolBlock } from '@/types/ui';
+
+export default function Home() {
+  const { messages, connect, disconnect, isConnected, sendUserMessage } = useChatStore();
+  const [input, setInput] = useState('');
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    connect();
+    return () => disconnect();
+  }, [connect, disconnect]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const handleSend = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || !isConnected) return;
+    sendUserMessage(input);
+    setInput('');
+  };
+
+  return (
+    <main className="flex flex-col h-screen max-w-5xl mx-auto p-4 md:p-8">
+      <header className="flex items-center justify-between mb-8 pb-4 border-b border-zinc-800">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">Agent Console</h1>
+          <div className="flex items-center gap-2 mt-1">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+            <span className="text-xs text-zinc-400 uppercase tracking-widest font-medium">
+              {isConnected ? 'Backend Online' : 'Backend Offline'}
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <div 
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto space-y-6 mb-6 pr-4 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent"
+      >
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[85%] ${msg.role === 'user' ? 'bg-zinc-800 p-4 rounded-2xl rounded-tr-none' : 'w-full'}`}>
+              {msg.role === 'user' ? (
+                <p className="text-sm leading-relaxed">{msg.content}</p>
+              ) : (
+                <div className="space-y-4">
+                  {(msg as AgentMessage).blocks.map((block, j) => (
+                    <RenderBlock key={j} block={block} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={handleSend} className="relative">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={isConnected ? "Message the agent..." : "Connecting to backend..."}
+          disabled={!isConnected}
+          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500/50 transition-all placeholder:text-zinc-600"
+        />
+        <button
+          type="submit"
+          disabled={!isConnected || !input.trim()}
+          className="absolute right-2 top-2 bottom-2 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-lg text-xs font-bold transition-colors uppercase tracking-wider"
+        >
+          Send
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function RenderBlock({ block }: { block: MessageBlock }) {
+  if (block.type === 'text') {
+    return <p className="text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">{block.content}</p>;
+  }
+
+  const tool = block as ToolBlock;
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden my-2 shadow-sm">
+      <div className="bg-zinc-800/50 px-4 py-2 border-b border-zinc-800 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="p-1 bg-emerald-500/10 rounded">
+            <svg className="w-3 h-3 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+            </svg>
+          </div>
+          <span className="text-xs font-mono font-bold text-zinc-300 uppercase tracking-tight">{tool.tool_name}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-[10px] font-bold uppercase tracking-widest ${
+            tool.status === 'result_received' ? 'text-emerald-500' : 'text-amber-500 animate-pulse'
+          }`}>
+            {tool.status === 'result_received' ? 'Completed' : 'Running...'}
+          </span>
+        </div>
+      </div>
+      <div className="p-4 space-y-3">
+        <div className="space-y-1">
+          <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Arguments</span>
+          <pre className="text-xs font-mono bg-zinc-950 p-2 rounded border border-zinc-800 overflow-x-auto text-zinc-400">
+            {JSON.stringify(tool.args, null, 2)}
+          </pre>
+        </div>
+        {tool.result && (
+          <div className="space-y-1">
+            <span className="text-[10px] uppercase tracking-widest text-emerald-500/70 font-bold">Result</span>
+            <pre className="text-xs font-mono bg-zinc-950 p-2 rounded border border-emerald-500/20 overflow-x-auto text-emerald-400/90">
+              {JSON.stringify(tool.result, null, 2)}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
