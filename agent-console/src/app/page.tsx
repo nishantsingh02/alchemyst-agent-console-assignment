@@ -5,6 +5,7 @@ import { useChatStore } from '@/store/useChatStore';
 import { UIMessage, AgentMessage, MessageBlock, ToolBlock } from '@/types/ui';
 
 import TraceTimeline from '@/components/TraceTimeline';
+import ContextInspector from '@/components/ContextInspector';
 
 export default function Home() {
   const { 
@@ -17,6 +18,7 @@ export default function Home() {
     setHighlightedCorrelation 
   } = useChatStore();
   const [input, setInput] = useState('');
+  const [activeTab, setActiveTab] = useState<'trace' | 'context'>('trace');
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,8 +41,7 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-zinc-950 overflow-hidden">
-      <main className="flex-1 flex flex-col min-w-0">
-        {/* ... (header same) */}
+      <main className="flex-1 flex flex-col min-w-0 border-r border-zinc-800">
         <header className="flex items-center justify-between p-4 md:px-8 border-b border-zinc-800 shrink-0">
           <div>
             <h1 className="text-xl font-bold tracking-tight">Agent Console</h1>
@@ -87,7 +88,7 @@ export default function Home() {
             </div>
           ))}
         </div>
-        {/* ... (form same) */}
+
         <div className="p-4 md:px-8 pb-8 shrink-0">
           <form onSubmit={handleSend} className="relative max-w-4xl mx-auto">
             <input
@@ -109,7 +110,29 @@ export default function Home() {
         </div>
       </main>
 
-      <TraceTimeline />
+      <div className="w-96 flex flex-col bg-zinc-950">
+        <div className="flex border-b border-zinc-800 shrink-0">
+          <button 
+            onClick={() => setActiveTab('trace')}
+            className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest transition-colors ${
+              activeTab === 'trace' ? 'text-emerald-500 border-b-2 border-emerald-500 bg-zinc-900/50' : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            Trace
+          </button>
+          <button 
+            onClick={() => setActiveTab('context')}
+            className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest transition-colors ${
+              activeTab === 'context' ? 'text-emerald-500 border-b-2 border-emerald-500 bg-zinc-900/50' : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            Context
+          </button>
+        </div>
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {activeTab === 'trace' ? <TraceTimeline /> : <ContextInspector />}
+        </div>
+      </div>
     </div>
   );
 }

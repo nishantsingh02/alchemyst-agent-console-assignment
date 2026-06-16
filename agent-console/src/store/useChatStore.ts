@@ -10,6 +10,7 @@ import {
 import { UIMessage, AgentMessage, MessageBlock, ToolBlock } from '@/types/ui';
 
 import { TraceEvent, TraceEventType } from '@/types/trace';
+import { ContextHistory, ContextSnapshot } from '@/types/context';
 
 interface ChatState {
   messages: UIMessage[];
@@ -23,6 +24,10 @@ interface ChatState {
   activeCorrelationId: string | null;
   filter: string;
   search: string;
+
+  // Context Task
+  contextHistories: Record<string, ContextHistory>;
+  activeContextId: string | null;
   
   // Actions
   connect: () => void;
@@ -33,6 +38,10 @@ interface ChatState {
   setHighlightedCorrelation: (id: string | null) => void;
   setFilter: (filter: string) => void;
   setSearch: (search: string) => void;
+  
+  // Context Actions
+  setActiveContext: (id: string | null) => void;
+  setContextIndex: (contextId: string, index: number) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -45,6 +54,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeCorrelationId: null,
   filter: 'ALL',
   search: '',
+  contextHistories: {},
+  activeContextId: null,
 
   // Actions
   connect: () => {
@@ -98,6 +109,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setFilter: (filter) => set({ filter }),
   setSearch: (search) => set({ search }),
 
+  setActiveContext: (id) => set({ activeContextId: id }),
+  setContextIndex: (contextId, index) => set((state) => {
+    const history = state.contextHistories[contextId];
+    if (!history) return state;
+    return {
+      contextHistories: {
+        ...state.contextHistories,
+        [contextId]: { ...history, currentIndex: index }
+      }
+    };
+  }),
+
   sendUserMessage: (content: string) => {
     const { socket } = get();
     if (!socket) return;
@@ -150,6 +173,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       return { traceEvents: newTraceEvents };
     });
+
+    // Handle Context Snapshots
+    if (message.type === 'CONTEXT_SNAPSHOT') {
+      set((state) => {
+        const histories = { ...state.contextHistories };
+        const { context_id, data, seq } = message;
+        
+        if (!histories[context_id]) {
+          histories[context_id] = {
+            context_id,
+            snapshots: [],
+            currentIndex: 0
+          };
+        }
+
+        const snapshot: ContextSnapshot = {
+          id: `snap-${seq}-${now}`,
+          timestamp: now,
+          data,
+          seq
+        };
+
+        histories[context_id].snapshots.push(snapshot);
+        histories[context_id].currentIndex = histories[context_id].snapshots.length - 1;
+
+        return { 
+          contextHistories: histories,
+          activeContextId: context_id 
+        };
+      });
+    }
 
     // Handle Protocol/Chat State
     switch (message.type) {

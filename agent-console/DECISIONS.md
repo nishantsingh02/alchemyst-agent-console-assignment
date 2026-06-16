@@ -49,3 +49,9 @@ This document outlines the engineering decisions and architectural rationale beh
 
 - **Tailwind CSS:** Chosen for utility-first styling to ensure that layout constraints (like the chat window height and scroll behavior) are robust and don't rely on complex custom CSS that could cause layout shifts.
 - **Visual Feedback:** Added an "Animate Pulse" effect to running tools and a "Completed" state for finished tools to give the user immediate visual feedback on the agent's internal state.
+
+
+## 5. Regarding Task 3
+
+- **react-virtuoso:** Timeline uses react-virtuoso to virtualize event rows and prevent rendering bottlenecks during high-frequency token streams.
+The timeline must not cause visible jank when events are arriving at 30+ per second.
