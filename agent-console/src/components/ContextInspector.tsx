@@ -110,8 +110,9 @@ function JsonTree({ data, diff, depth = 0 }: { data: any, diff?: any, depth?: nu
         if (keyDiff) {
           if (Array.isArray(keyDiff)) {
             if (keyDiff.length === 1) bgClass = 'bg-emerald-500/10 ring-1 ring-emerald-500/20'; // Added
-            else if (keyDiff.length === 3 && keyDiff[2] === 3) bgClass = 'bg-rose-500/10 ring-1 ring-rose-500/20'; // Deleted
-            else bgClass = 'bg-amber-500/10 ring-1 ring-amber-500/20'; // Modified
+            else if (keyDiff.length === 3 && keyDiff[2] === 0) bgClass = 'bg-rose-500/10 ring-1 ring-rose-500/20'; // Deleted
+            else if (keyDiff.length === 2) bgClass = 'bg-amber-500/10 ring-1 ring-amber-500/20'; // Modified
+            else bgClass = 'bg-amber-500/10 ring-1 ring-amber-500/20'; // Fallback
           } else {
             bgClass = 'bg-amber-500/5'; // Nested change
           }

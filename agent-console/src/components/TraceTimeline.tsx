@@ -17,10 +17,24 @@ export default function TraceTimeline() {
   const [isOpen, setIsOpen] = useState(true);
 
   const filteredEvents = useMemo(() => {
+    // If no search string is provided, use a fast path to avoid JSON.stringify
+    if (!search) {
+      if (filter === 'ALL') return traceEvents;
+      return traceEvents.filter(event => event.type === filter);
+    }
+
+    const searchLower = search.toLowerCase();
     return traceEvents.filter(event => {
       const matchesFilter = filter === 'ALL' || event.type === filter;
-      const matchesSearch = !search || JSON.stringify(event.data).toLowerCase().includes(search.toLowerCase());
-      return matchesFilter && matchesSearch;
+      if (!matchesFilter) return false;
+      
+      // Only stringify if we absolutely have to for search
+      try {
+        const dataString = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
+        return dataString.toLowerCase().includes(searchLower);
+      } catch (e) {
+        return false;
+      }
     });
   }, [traceEvents, filter, search]);
 

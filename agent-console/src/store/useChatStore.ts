@@ -74,42 +74,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
   connect: () => {
     if (get().socket) return;
 
-    const { reconnectTimeoutId } = get();
-    if (reconnectTimeoutId) clearTimeout(reconnectTimeoutId);
-    
-    set({ reconnectTimeoutId: null });
-
     const ws = new WebSocket('ws://localhost:4747/ws');
 
     ws.onopen = () => {
-      // Clear the buffer! If we dropped, the server will replay missing seqs.
-      // Reset isAgentStreaming because the server aborts active streams on drop.
-      set({ 
-        isConnected: true, 
-        socket: ws, 
-        reconnectAttempt: 0, 
-        messageBuffer: new Map(),
-        isAgentStreaming: false 
-      });
+      set({ isConnected: true, socket: ws });
       console.log('Connected to agent-server');
-      
-      const { lastSeq, offlineQueue } = get();
-      
-      // REQUIREMENT: Must send RESUME as the *first* message on new connection.
-      // We must always send this, even if lastSeq is 0, so the server knows we are ready.
-      ws.send(JSON.stringify({ type: 'RESUME', last_seq: lastSeq || 0 }));
-      
-      // Flush offline queue
-      if (offlineQueue.length > 0) {
-        offlineQueue.forEach(msg => ws.send(JSON.stringify(msg)));
-        set({ offlineQueue: [] });
-      }
     };
 
     ws.onmessage = (event) => {
       try {
         const data: ServerMessage = JSON.parse(event.data);
-        get().handleRawMessage(data);
+        get().processMessage(data);
       } catch (e) {
         console.error('Failed to parse message:', e);
       }
@@ -119,16 +94,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (get().socket === ws) {
         set({ isConnected: false, socket: null });
         console.log('Disconnected from agent-server');
-        
-        const attempt = get().reconnectAttempt;
-        const delays = [500, 1000, 2000, 4000];
-        const delay = attempt < delays.length ? delays[attempt] : 10000;
-        
-        const timeoutId = setTimeout(() => {
-          get().connect();
-        }, delay);
-        
-        set({ reconnectAttempt: attempt + 1, reconnectTimeoutId: timeoutId });
       }
     };
 
@@ -138,13 +103,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   disconnect: () => {
-    const { socket, reconnectTimeoutId } = get();
-    if (reconnectTimeoutId) clearTimeout(reconnectTimeoutId);
-    
+    const { socket } = get();
     if (socket) {
       socket.close();
+      set({ socket: null, isConnected: false });
     }
-    set({ socket: null, isConnected: false, reconnectTimeoutId: null });
   },
 
   handleRawMessage: (message: ServerMessage) => {
@@ -271,16 +234,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Handle Context Snapshots
     if (message.type === 'CONTEXT_SNAPSHOT') {
       set((state) => {
-        const histories = { ...state.contextHistories };
         const { context_id, data, seq } = message;
         
-        if (!histories[context_id]) {
-          histories[context_id] = {
-            context_id,
-            snapshots: [],
-            currentIndex: 0
-          };
-        }
+        const existingHistory = state.contextHistories[context_id] || {
+          context_id,
+          snapshots: [],
+          currentIndex: 0
+        };
 
         const snapshot: ContextSnapshot = {
           id: `snap-${seq}-${now}`,
@@ -289,11 +249,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           seq
         };
 
-        histories[context_id].snapshots.push(snapshot);
-        histories[context_id].currentIndex = histories[context_id].snapshots.length - 1;
+        const newSnapshots = [...existingHistory.snapshots, snapshot];
 
         return { 
-          contextHistories: histories,
+          contextHistories: {
+            ...state.contextHistories,
+            [context_id]: {
+              ...existingHistory,
+              snapshots: newSnapshots,
+              currentIndex: newSnapshots.length - 1
+            }
+          },
           activeContextId: context_id 
         };
       });
@@ -317,78 +283,103 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
         break;
 
-      case 'TOKEN':
+      case 'TOKEN': {
         const tokenMsg = message as TokenMessage;
         set((state) => {
           const newMessages = [...state.messages];
-          let agentMsg = newMessages.find(
+          const agentMsgIndex = newMessages.findIndex(
             (m) => m.role === 'agent' && m.stream_id === tokenMsg.stream_id
-          ) as AgentMessage;
+          );
 
-          if (!agentMsg) {
-            agentMsg = { role: 'agent', stream_id: tokenMsg.stream_id, blocks: [] };
-            newMessages.push(agentMsg);
-          }
-
-          const lastBlock = agentMsg.blocks[agentMsg.blocks.length - 1];
-          if (lastBlock?.type === 'text') {
-            lastBlock.content += tokenMsg.text;
+          if (agentMsgIndex === -1) {
+            newMessages.push({
+              role: 'agent',
+              stream_id: tokenMsg.stream_id,
+              blocks: [{ type: 'text', content: tokenMsg.text }]
+            });
           } else {
-            agentMsg.blocks.push({ type: 'text', content: tokenMsg.text });
+            const agentMsg = { ...newMessages[agentMsgIndex] } as AgentMessage;
+            const newBlocks = [...agentMsg.blocks];
+            const lastBlockIndex = newBlocks.length - 1;
+            
+            if (lastBlockIndex >= 0 && newBlocks[lastBlockIndex].type === 'text') {
+              newBlocks[lastBlockIndex] = {
+                ...newBlocks[lastBlockIndex],
+                content: (newBlocks[lastBlockIndex] as any).content + tokenMsg.text
+              };
+            } else {
+              newBlocks.push({ type: 'text', content: tokenMsg.text });
+            }
+            
+            agentMsg.blocks = newBlocks;
+            newMessages[agentMsgIndex] = agentMsg;
           }
 
           return { messages: newMessages, isAgentStreaming: true };
         });
         break;
+      }
 
-      case 'TOOL_CALL':
+      case 'TOOL_CALL': {
         const toolCall = message as ToolCallMessage;
         get().socket?.send(JSON.stringify({ type: 'TOOL_ACK', call_id: toolCall.call_id }));
 
         set((state) => {
           const newMessages = [...state.messages];
-          let agentMsg = newMessages.find(
+          const agentMsgIndex = newMessages.findIndex(
             (m) => m.role === 'agent' && m.stream_id === toolCall.stream_id
-          ) as AgentMessage;
+          );
 
-          if (!agentMsg) {
-            agentMsg = { role: 'agent', stream_id: toolCall.stream_id, blocks: [] };
-            newMessages.push(agentMsg);
-          }
-
-          agentMsg.blocks.push({
+          const newToolBlock: ToolBlock = {
             type: 'tool',
             call_id: toolCall.call_id,
             tool_name: toolCall.tool_name,
             args: toolCall.args,
             status: 'acknowledged',
-          });
+          };
+
+          if (agentMsgIndex === -1) {
+            newMessages.push({
+              role: 'agent',
+              stream_id: toolCall.stream_id,
+              blocks: [newToolBlock]
+            });
+          } else {
+            const agentMsg = { ...newMessages[agentMsgIndex] } as AgentMessage;
+            agentMsg.blocks = [...agentMsg.blocks, newToolBlock];
+            newMessages[agentMsgIndex] = agentMsg;
+          }
 
           return { messages: newMessages, isAgentStreaming: true };
         });
         break;
+      }
 
-      case 'TOOL_RESULT':
+      case 'TOOL_RESULT': {
         const toolResult = message as ToolResultMessage;
         set((state) => {
           const newMessages = [...state.messages];
-          const agentMsg = newMessages.find(
+          const agentMsgIndex = newMessages.findIndex(
             (m) => m.role === 'agent' && m.stream_id === toolResult.stream_id
-          ) as AgentMessage;
+          );
 
-          if (agentMsg) {
-            const toolBlock = agentMsg.blocks.find(
-              (b) => b.type === 'tool' && b.call_id === toolResult.call_id
-            ) as ToolBlock;
-            if (toolBlock) {
-              toolBlock.result = toolResult.result;
-              toolBlock.status = 'result_received';
-            }
+          if (agentMsgIndex !== -1) {
+            const agentMsg = { ...newMessages[agentMsgIndex] } as AgentMessage;
+            const newBlocks = agentMsg.blocks.map(block => {
+              if (block.type === 'tool' && block.call_id === toolResult.call_id) {
+                return { ...block, result: toolResult.result, status: 'result_received' as const };
+              }
+              return block;
+            });
+            
+            agentMsg.blocks = newBlocks;
+            newMessages[agentMsgIndex] = agentMsg;
           }
 
           return { messages: newMessages };
         });
         break;
+      }
 
       case 'STREAM_END':
         set({ isAgentStreaming: false });

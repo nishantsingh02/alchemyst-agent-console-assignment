@@ -14,7 +14,6 @@ export default function Home() {
     disconnect, 
     isConnected,
     reconnectAttempt,
-    isAgentStreaming,
     sendUserMessage, 
     activeCorrelationId, 
     setHighlightedCorrelation 
