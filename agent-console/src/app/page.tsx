@@ -12,7 +12,9 @@ export default function Home() {
     messages, 
     connect, 
     disconnect, 
-    isConnected, 
+    isConnected,
+    reconnectAttempt,
+    isAgentStreaming,
     sendUserMessage, 
     activeCorrelationId, 
     setHighlightedCorrelation 
@@ -46,9 +48,9 @@ export default function Home() {
           <div>
             <h1 className="text-xl font-bold tracking-tight">Agent Console</h1>
             <div className="flex items-center gap-2 mt-1">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : reconnectAttempt > 0 ? 'bg-amber-500 animate-pulse' : 'bg-rose-500'}`} />
               <span className="text-xs text-zinc-400 uppercase tracking-widest font-medium">
-                {isConnected ? 'Backend Online' : 'Backend Offline'}
+                {isConnected ? 'Backend Online' : reconnectAttempt > 0 ? `Reconnecting (Attempt ${reconnectAttempt})...` : 'Backend Offline'}
               </span>
             </div>
           </div>

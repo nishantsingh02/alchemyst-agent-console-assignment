@@ -2,6 +2,22 @@
 
 This document outlines the engineering decisions and architectural rationale behind the Alchemyst AI Agent Console implementation.
 
+## System Architecture
+
+```mermaid
+graph TD
+    A[WebSocket Server] <-->|JSON Stream & ACKs| B(WebSocket Transport Hook)
+    B -->|Ingest Raw Event| C{Protocol Engine}
+    C -->|Store Out-of-Order| D[Sequence Buffer Map]
+    C -->|Filter Duplicates| E[Processed Seq Set]
+    C -->|Commit Ordered Event| F[Immutable Event Log]
+    F -->|requestAnimationFrame Batching| G(React UI Tree)
+    F -->|Context Snapshots| H[Diff Web Worker]
+    H -->|Calculate Diffs Off-Thread| G
+```
+
+---
+
 ## 1. State Management: Zustand
 
 **Decision:** Used **Zustand** for centralized state management.
@@ -37,13 +53,14 @@ This document outlines the engineering decisions and architectural rationale beh
 - **Latency Optimization:** The server enforces a 5s timeout for `TOOL_ACK` and a 3s timeout for `PONG`. By responding inside the `onmessage` handler (the same event loop tick), we guarantee compliance regardless of how heavy the UI rendering might be.
 - **State Synchronization:** We track `lastSeq` on every message. This is the foundation for Task 4 (Reconnection Recovery), allowing us to tell the server exactly where to resume playback.
 
-## 4. Addressing "Chaos Mode" (Work in Progress)
+## 4. Reconnection with State Recovery (Task 4)
 
-**Decision:** Implementing a **Sequencing Buffer** (Reordering Logic).
+**Decision:** Implemented an Exponential Backoff strategy with a Sequencing Buffer and `RESUME` handshake.
 
 **Rationale:**
-- **Deterministic Order:** In Chaos Mode, messages arrive out of order. Our planned buffer will use the `seq` number to hold "future" messages in a waiting room until the missing "gap" messages arrive. This ensures the UI always displays a coherent response, even if the network delivery is jumbled.
-- **Deduplication:** The buffer will automatically discard duplicate `seq` numbers, preventing "double-rendering" of tokens or tool cards.
+- **Non-Blocking UI:** When a socket drops (simulated in Chaos Mode), the UI switches to a non-blocking "Reconnecting..." state. The user can still scroll and read previous messages because the state is persisted in Zustand, not tied to the active socket instance.
+- **State Recovery (The Hard Part):** Most tutorials just call `new WebSocket()`. We track the `lastSeq` processed by the DOM. Upon successful reconnection, the *first* message sent is `RESUME(last_seq)`. This guarantees the server only replays what the client actually missed.
+- **Sequencing Buffer:** To handle Chaos Mode's out-of-order delivery, I implemented a `handleRawMessage` layer. If a message arrives early (e.g., seq 15 arrives before 14), it is parked in a `Map`. When seq 14 finally arrives, it is processed, and then the buffer is immediately flushed to process 15 in strict, deterministic order. This completely eliminates UI jitter and duplicate tokens.
 
 ## 5. UI/UX Decisions
 

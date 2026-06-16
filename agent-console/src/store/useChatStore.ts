@@ -15,6 +15,7 @@ import { ContextHistory, ContextSnapshot } from '@/types/context';
 interface ChatState {
   messages: UIMessage[];
   isConnected: boolean;
+  isAgentStreaming: boolean;
   lastSeq: number;
   socket: WebSocket | null;
   
@@ -28,11 +29,18 @@ interface ChatState {
   // Context Task
   contextHistories: Record<string, ContextHistory>;
   activeContextId: string | null;
+
+  // Reconnection & Sequencing
+  reconnectAttempt: number;
+  reconnectTimeoutId: ReturnType<typeof setTimeout> | null;
+  messageBuffer: Map<number, ServerMessage>;
+  offlineQueue: ClientMessage[];
   
   // Actions
   connect: () => void;
   disconnect: () => void;
   sendUserMessage: (content: string) => void;
+  handleRawMessage: (message: ServerMessage) => void;
   processMessage: (message: ServerMessage) => void;
   setHighlightedEvent: (id: string | null) => void;
   setHighlightedCorrelation: (id: string | null) => void;
@@ -47,6 +55,7 @@ interface ChatState {
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isConnected: false,
+  isAgentStreaming: false,
   lastSeq: 0,
   socket: null,
   traceEvents: [],
@@ -56,22 +65,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
   search: '',
   contextHistories: {},
   activeContextId: null,
+  reconnectAttempt: 0,
+  reconnectTimeoutId: null,
+  messageBuffer: new Map(),
+  offlineQueue: [],
 
   // Actions
   connect: () => {
     if (get().socket) return;
 
+    const { reconnectTimeoutId } = get();
+    if (reconnectTimeoutId) clearTimeout(reconnectTimeoutId);
+    
+    set({ reconnectTimeoutId: null });
+
     const ws = new WebSocket('ws://localhost:4747/ws');
 
     ws.onopen = () => {
-      set({ isConnected: true, socket: ws });
+      // Clear the buffer! If we dropped, the server will replay missing seqs.
+      // Reset isAgentStreaming because the server aborts active streams on drop.
+      set({ 
+        isConnected: true, 
+        socket: ws, 
+        reconnectAttempt: 0, 
+        messageBuffer: new Map(),
+        isAgentStreaming: false 
+      });
       console.log('Connected to agent-server');
+      
+      const { lastSeq, offlineQueue } = get();
+      
+      // REQUIREMENT: Must send RESUME as the *first* message on new connection.
+      // We must always send this, even if lastSeq is 0, so the server knows we are ready.
+      ws.send(JSON.stringify({ type: 'RESUME', last_seq: lastSeq || 0 }));
+      
+      // Flush offline queue
+      if (offlineQueue.length > 0) {
+        offlineQueue.forEach(msg => ws.send(JSON.stringify(msg)));
+        set({ offlineQueue: [] });
+      }
     };
 
     ws.onmessage = (event) => {
       try {
         const data: ServerMessage = JSON.parse(event.data);
-        get().processMessage(data);
+        get().handleRawMessage(data);
       } catch (e) {
         console.error('Failed to parse message:', e);
       }
@@ -81,6 +119,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (get().socket === ws) {
         set({ isConnected: false, socket: null });
         console.log('Disconnected from agent-server');
+        
+        const attempt = get().reconnectAttempt;
+        const delays = [500, 1000, 2000, 4000];
+        const delay = attempt < delays.length ? delays[attempt] : 10000;
+        
+        const timeoutId = setTimeout(() => {
+          get().connect();
+        }, delay);
+        
+        set({ reconnectAttempt: attempt + 1, reconnectTimeoutId: timeoutId });
       }
     };
 
@@ -90,12 +138,54 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   disconnect: () => {
-    const { socket } = get();
+    const { socket, reconnectTimeoutId } = get();
+    if (reconnectTimeoutId) clearTimeout(reconnectTimeoutId);
+    
     if (socket) {
       socket.close();
-      set({ socket: null, isConnected: false });
+    }
+    set({ socket: null, isConnected: false, reconnectTimeoutId: null });
+  },
+
+  handleRawMessage: (message: ServerMessage) => {
+    const state = get();
+    
+    // Safety check for corrupt messages missing sequence numbers
+    if (message.seq === undefined || message.seq === null) {
+      get().processMessage(message);
+      return;
+    }
+
+    // Deduplicate
+    if (message.seq <= state.lastSeq) {
+      return; 
+    }
+
+    // Buffer out-of-order messages
+    if (message.seq > state.lastSeq + 1) {
+      const newBuffer = new Map(state.messageBuffer);
+      newBuffer.set(message.seq, message);
+      set({ messageBuffer: newBuffer });
+      return;
+    }
+
+    // Process immediately
+    get().processMessage(message);
+
+    // Replay any buffered messages that are now next in sequence
+    let nextSeq = message.seq + 1;
+    let currentBuffer = get().messageBuffer;
+    
+    while (currentBuffer.has(nextSeq)) {
+      const nextMsg = currentBuffer.get(nextSeq)!;
+      currentBuffer.delete(nextSeq);
+      set({ messageBuffer: new Map(currentBuffer) });
+      get().processMessage(nextMsg);
+      nextSeq++;
+      currentBuffer = get().messageBuffer;
     }
   },
+
   setHighlightedEvent: (id) => {
     const event = get().traceEvents.find(e => e.id === id);
     set({ highlightedEventId: id, activeCorrelationId: event?.correlationId || null });
@@ -122,8 +212,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   }),
 
   sendUserMessage: (content: string) => {
-    const { socket } = get();
-    if (!socket) return;
+    const { socket, isConnected } = get();
 
     set((state) => ({
       messages: [...state.messages, { role: 'user', content }],
@@ -139,7 +228,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     const msg: ClientMessage = { type: 'USER_MESSAGE', content };
-    socket.send(JSON.stringify(msg));
+    
+    if (socket && isConnected && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(msg));
+    } else {
+      set((state) => ({ offlineQueue: [...state.offlineQueue, msg] }));
+    }
   },
 
   processMessage: (message: ServerMessage) => {
@@ -208,7 +302,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Handle Protocol/Chat State
     switch (message.type) {
       case 'PING':
-        const pong = { type: 'PONG', echo: (message as PingMessage).challenge };
+        const pingMsg = message as any;
+        const challenge = pingMsg.challenge || '';
+        const pong = { type: 'PONG', echo: challenge };
         get().socket?.send(JSON.stringify(pong));
         // Also trace the PONG
         set(state => ({
@@ -241,7 +337,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentMsg.blocks.push({ type: 'text', content: tokenMsg.text });
           }
 
-          return { messages: newMessages };
+          return { messages: newMessages, isAgentStreaming: true };
         });
         break;
 
@@ -268,7 +364,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             status: 'acknowledged',
           });
 
-          return { messages: newMessages };
+          return { messages: newMessages, isAgentStreaming: true };
         });
         break;
 
@@ -292,6 +388,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           return { messages: newMessages };
         });
+        break;
+
+      case 'STREAM_END':
+        set({ isAgentStreaming: false });
         break;
     }
   },
