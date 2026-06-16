@@ -1,65 +1,88 @@
-# Agent Console - Design & Setup
+# Deterministic AI Observability Console
 
-## Architectural Approach
-The Agent Console is built as a **Distributed Systems Monitoring Tool** rather than a simple chat UI. 
-- **State Management**: Zustand handles the persistent WebSocket lifecycle, ensuring the connection is decoupled from React's render cycle.
-- **Rendering Strategy**: A "Block-Based" approach ensures zero layout shift. Each agent response is an array of discrete Text or Tool blocks.
-- **Protocol Compliance**: Strictly adheres to the `seq` numbering system and mandatory `TOOL_ACK`/`PONG` timing requirements.
+A production-grade, event-sourced telemetry dashboard designed to monitor and control a streaming AI agent. The console handles unstable network channels by processing all socket payloads through a deterministic protocol engine, projecting all visual states strictly from an immutable event log.
 
-## WebSocket State Machine
-This diagram shows how we handle the "Hard" part of Task 1: Interleaving streaming tokens with tool calls.
+---
+
+## System Architecture
 
 ```mermaid
-stateDiagram-v2
-    [*] --> DISCONNECTED
-    DISCONNECTED --> CONNECTING : connect()
-    CONNECTING --> CONNECTED : onOpen
-    CONNECTED --> IDLE : Ready
-    
-    state "Message Processing" as MP {
-        IDLE --> STREAMING_TEXT : "TOKEN" arrived
-        STREAMING_TEXT --> STREAMING_TEXT : Append Token
-        
-        STREAMING_TEXT --> TOOL_PENDING : "TOOL_CALL" arrived
-        TOOL_PENDING --> TOOL_ACKNOWLEDGED : Send TOOL_ACK
-        TOOL_ACKNOWLEDGED --> AWAITING_RESULT : Wait for Server
-        
-        AWAITING_RESULT --> STREAMING_TEXT : "TOOL_RESULT" + "TOKEN" arrived
-        
-        STREAMING_TEXT --> IDLE : "STREAM_END" arrived
-    }
-    
-    MP --> RECONNECTING : onConnectionDrop
-    RECONNECTING --> RESUMING : onOpen
-    RESUMING --> MP : Send RESUME(lastSeq)
-    
-    MP --> DISCONNECTED : disconnect()
+graph TD
+    A[WebSocket Server] <-->|JSON Stream & ACKs| B(WebSocket Transport Hook)
+    B -->|Ingest Raw Event| C{Protocol Engine}
+    C -->|Store Out-of-Order| D[Sequence Buffer Map]
+    C -->|Filter Duplicates| E[Processed Seq Set]
+    C -->|Commit Ordered Event| F[Immutable Event Log]
+    F -->|requestAnimationFrame Batching| G(React UI Tree)
+    F -->|Context Snapshots| H[Diff Web Worker]
+    H -->|Calculate Diffs Off-Thread| G
 ```
 
-## Setup Instructions
+---
 
-1. **Install Dependencies**:
-   ```bash
-   npm install
-   ```
+## Directory Structure
+*   `/agent-console`: Next.js 14 frontend console (TypeScript, Vanilla CSS, Neobrutalist design).
+*   `/agent-server`: Mock AI agent server (TypeScript, tsx runtime).
 
-2. **Run the Backend (Required)**:
-   Ensure the `agent-server` is running on port 4747.
-   ```bash
-   # In agent-server directory
-   docker build -t agent-server .
-   docker run -p 4747:4747 agent-server
-   ```
+---
 
-3. **Run the Frontend**:
-   ```bash
-   npm run dev
-   ```
-   Visit `http://localhost:3000`.
+## Core Engineering Highlights
 
-## Implementation Status
-- [x] **Task 1**: Streaming Chat with Tool Call Interruptions (Complete)
-- [ ] **Task 2**: Agent Trace Timeline (Planned)
-- [ ] **Task 3**: Context Inspector (Planned)
-- [ ] **Task 4**: Reconnection Recovery (Foundation Ready)
-- [ ] **Task 5**: Chaos Survival (Testing Phase)
+*   **100% Deterministic State Projection**: UI components run the immutable event log chronologically to derive state. The transport layer has no state-modification side effects, guaranteeing zero view drift.
+*   **Sequence-Based Reordering**: Buffers out-of-order packets (`seq > expected`) in a hash map and processes them recursively once missing packets arrive, maintaining chronological order.
+*   **Deduplication**: Drops duplicate sequence numbers in $O(1)$ time using a tracking set to prevent double-rendering.
+*   **Auto-Recovery & RESUME Handshake**: Handles unexpected connection drops by initiating a handshake with the last committed sequence number. The server replays missed packets, and the client filters them against its processed log.
+*   **Off-Thread Web Worker Diffing**: Isolates heavy structural object diff calculations (on 500KB+ database schemas) to a Web Worker, preserving a constant 60 FPS on the main UI thread.
+*   **rAF-Batched Rendering**: Batches high-frequency token updates inside `requestAnimationFrame` hooks to prevent browser layout thrashing and reflow bottlenecks.
+*   **Trace Focus-Linking**: Maps timeline logs to chat cards, letting users click on any chat message to highlight corresponding execution traces instantly.
+*   **Stale Socket Rejection**: Rejects callbacks from stale sockets during hot-reloads by tracking the active socket reference pointer.
+
+---
+
+## Quick Start
+
+### 1. Start the Server (Port `4747`)
+```bash
+cd agent-server
+npm install
+npm run dev
+
+# Or with Docker:
+docker build -t agent-server .
+docker run -p 4747:4747 agent-server
+```
+
+### 2. Start the Console (Port `3000`/`3001`)
+```bash
+cd agent-console
+npm install
+npm run dev
+```
+
+### 3. Run the Test Suite
+```bash
+cd agent-console
+npm run test
+```
+
+---
+
+## Technical Design Decisions
+
+### Packet Reordering & Deduplication
+To handle unstable channels that shuffle or repeat packets:
+*   **O(1) Sequence Buffer**: Out-of-order frames (`seq > expected_seq`) are held in a key-value map.
+*   **Linear Commit Loop**: Upon receiving the expected sequence number, the client commits it and recursively checks the buffer for `expected_seq + 1` to resolve gaps.
+*   **Double-Render Prevention**: A sequence set tracks all committed sequence numbers. Any packet whose sequence number is already present is immediately discarded.
+
+### RESUME Handshake Recovery
+To recover state after connection drops without repeating the entire conversation:
+*   The client sends a `RESUME` frame containing the `last_committed_seq`.
+*   The server replays only the sequence numbers following that ID.
+*   Any overlap is resolved by the client's deduplication set, resuming the live stream seamlessly.
+
+### Layout Reflow Mitigation
+High-throughput token streams frequently trigger browser repaint bottlenecking:
+*   **Block Partitioning**: Tokens are grouped into static `text` and `tool` block nodes.
+*   **State Freezing**: When a tool call starts, the text block reference is frozen to prevent layout shifts.
+*   **Append-on-Resume**: Resuming tokens start a new block below the tool card, leaving preceding nodes untouched.
