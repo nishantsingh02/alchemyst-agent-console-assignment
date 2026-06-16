@@ -1,6 +1,102 @@
-# Full Stack AI Engineer Assignment
+# Full Stack AI Engineer Assignment - Agent Console
 
-## Overview
+**📺 [Watch the Video Demo Here](https://youtu.be/hytPPpKLKEk?si=RFQ_DJsMS2OVOIrB)**
+
+## Deterministic AI Observability Console
+
+A production-grade, event-sourced telemetry dashboard designed to monitor and control a streaming AI agent. The console handles unstable network channels by processing all socket payloads through a deterministic protocol engine, projecting all visual states strictly from an immutable event log.
+
+---
+
+## System Architecture
+
+```mermaid
+graph TD
+    A[WebSocket Server] <-->|JSON Stream & ACKs| B(WebSocket Transport Hook)
+    B -->|Ingest Raw Event| C{Protocol Engine}
+    C -->|Store Out-of-Order| D[Sequence Buffer Map]
+    C -->|Filter Duplicates| E[Processed Seq Set]
+    C -->|Commit Ordered Event| F[Immutable Event Log]
+    F -->|requestAnimationFrame Batching| G(React UI Tree)
+    F -->|Context Snapshots| H[Diff Web Worker]
+    H -->|Calculate Diffs Off-Thread| G
+```
+
+---
+
+## Directory Structure
+*   `/agent-console`: Next.js 14 frontend console (TypeScript, Vanilla CSS, Neobrutalist design).
+*   `/agent-server`: Mock AI agent server (TypeScript, tsx runtime).
+
+---
+
+## Core Engineering Highlights
+
+*   **100% Deterministic State Projection**: UI components run the immutable event log chronologically to derive state. The transport layer has no state-modification side effects, guaranteeing zero view drift.
+*   **Sequence-Based Reordering**: Buffers out-of-order packets (`seq > expected`) in a hash map and processes them recursively once missing packets arrive, maintaining chronological order.
+*   **Deduplication**: Drops duplicate sequence numbers in $O(1)$ time using a tracking set to prevent double-rendering.
+*   **Auto-Recovery & RESUME Handshake**: Handles unexpected connection drops by initiating a handshake with the last committed sequence number. The server replays missed packets, and the client filters them against its processed log.
+*   **Off-Thread Web Worker Diffing**: Isolates heavy structural object diff calculations (on 500KB+ database schemas) to a Web Worker, preserving a constant 60 FPS on the main UI thread.
+*   **rAF-Batched Rendering**: Batches high-frequency token updates inside `requestAnimationFrame` hooks to prevent browser layout thrashing and reflow bottlenecks.
+*   **Trace Focus-Linking**: Maps timeline logs to chat cards, letting users click on any chat message to highlight corresponding execution traces instantly.
+*   **Stale Socket Rejection**: Rejects callbacks from stale sockets during hot-reloads by tracking the active socket reference pointer.
+
+---
+
+## Quick Start
+
+### 1. Start the Server (Port `4747`)
+```bash
+cd agent-server
+npm install
+npm run dev
+
+# Or with Docker:
+docker build -t agent-server .
+docker run -p 4747:4747 agent-server
+```
+
+### 2. Start the Console (Port `3000`/`3001`)
+```bash
+cd agent-console
+npm install
+npm run dev
+```
+
+### 3. Run the Test Suite
+```bash
+cd agent-console
+npm run test
+```
+
+---
+
+## Technical Design Decisions
+
+### Packet Reordering & Deduplication
+To handle unstable channels that shuffle or repeat packets:
+*   **O(1) Sequence Buffer**: Out-of-order frames (`seq > expected_seq`) are held in a key-value map.
+*   **Linear Commit Loop**: Upon receiving the expected sequence number, the client commits it and recursively checks the buffer for `expected_seq + 1` to resolve gaps.
+*   **Double-Render Prevention**: A sequence set tracks all committed sequence numbers. Any packet whose sequence number is already present is immediately discarded.
+
+### RESUME Handshake Recovery
+To recover state after connection drops without repeating the entire conversation:
+*   The client sends a `RESUME` frame containing the `last_committed_seq`.
+*   The server replays only the sequence numbers following that ID.
+*   Any overlap is resolved by the client's deduplication set, resuming the live stream seamlessly.
+
+### Layout Reflow Mitigation
+High-throughput token streams frequently trigger browser repaint bottlenecking:
+*   **Block Partitioning**: Tokens are grouped into static `text` and `tool` block nodes.
+*   **State Freezing**: When a tool call starts, the text block reference is frozen to prevent layout shifts.
+*   **Append-on-Resume**: Resuming tokens start a new block below the tool card, leaving preceding nodes untouched.
+
+---
+---
+
+## Original Assignment Description
+
+### Overview
 
 In this assignment, you will build an **Agent Console**  a Next.js application that connects to a provided mock AI agent backend over WebSockets, renders streaming responses with mid-stream tool call interruptions, displays a live agent trace timeline, and survives the backend's chaos mode without crashing or losing state.
 
@@ -10,7 +106,7 @@ This is not a chat UI exercise. It is a systems exercise that happens to have a 
 
 ---
 
-## Why This Assignment Exists
+### Why This Assignment Exists
 
 At Alchemyst AI, the frontend is the last mile between a context-aware AI agent and a paying client. If the agent streams a response and the UI jitters, the client sees a broken product. If a tool call happens mid-stream and the message reflows, the client loses trust. If the WebSocket drops and the reconnection silently loses three messages, the client sees an incoherent response and blames the AI.
 
@@ -18,7 +114,7 @@ We need engineers who understand that real-time AI interfaces are a distributed 
 
 ---
 
-## Prerequisites
+### Prerequisites
 
 - **Docker** installed and running (the agent-server ships as a container).
 - **Node.js 20+** and a package manager of your choice (`npm`, `pnpm`, `yarn`).
@@ -27,7 +123,7 @@ We need engineers who understand that real-time AI interfaces are a distributed 
 
 ---
 
-## The Agent Server
+### The Agent Server
 
 The `agent-server` directory contains a Dockerised WebSocket server that simulates a context-aware AI agent. Run it as:
 
@@ -46,11 +142,11 @@ You send a user message; the agent responds by streaming tokens, optionally maki
 
 ---
 
-## Protocol Reference
+### Protocol Reference
 
 Every WebSocket message is a JSON object with a `type` field and a monotonically increasing `seq` (sequence number). The `seq` is critical  it is how the client tracks what it has received and how state recovery works after reconnection.
 
-### Client → Server Messages
+#### Client → Server Messages
 
 | Type | Fields | Description |
 |---|---|---|
@@ -59,7 +155,7 @@ Every WebSocket message is a JSON object with a `type` field and a monotonically
 | `RESUME` | `last_seq: number` | Sent immediately upon reconnection. Tells the server the last `seq` the client successfully processed. The server replays all events after that `seq`. |
 | `TOOL_ACK` | `call_id: string` | Acknowledges that the client has rendered a tool call card. The server waits for this before sending `TOOL_RESULT`. If not received within 5 seconds, the server logs a protocol violation and sends the result anyway. |
 
-### Server → Client Messages
+#### Server → Client Messages
 
 | Type | Fields | Description |
 |---|---|---|
@@ -71,7 +167,7 @@ Every WebSocket message is a JSON object with a `type` field and a monotonically
 | `STREAM_END` | `seq`, `stream_id: string` | The agent has finished its response for this `stream_id`. |
 | `ERROR` | `seq`, `code: string`, `message: string` | A server-side error. May arrive at any point. |
 
-### Sequence Number Rules
+#### Sequence Number Rules
 
 1. Every server message has a `seq`. Sequence numbers are globally ordered and gapless in normal mode.
 2. The client must track the highest `seq` it has fully processed (rendered to the DOM, not just received).
@@ -79,7 +175,7 @@ Every WebSocket message is a JSON object with a `type` field and a monotonically
 4. In chaos mode, the server may send messages with out-of-order `seq` values. The client must buffer and reorder before processing.
 5. Duplicate `seq` values are possible in chaos mode. The client must deduplicate.
 
-### Chaos Mode Behaviours
+#### Chaos Mode Behaviours
 
 When the server runs with `--mode chaos`, it randomly introduces:
 
@@ -95,9 +191,9 @@ When the server runs with `--mode chaos`, it randomly introduces:
 
 ---
 
-## What to Build
+### What to Build
 
-### Task 1  Streaming Chat with Tool Call Interruptions
+#### Task 1  Streaming Chat with Tool Call Interruptions
 
 Build the core chat interface. A user types a message, the agent streams a response token by token, and tool calls interrupt the stream mid-sentence.
 
@@ -111,7 +207,7 @@ Build the core chat interface. A user types a message, the agent streams a respo
 
 **Why this is hard:** Getting the interleave right  freezing the stream at the exact token boundary, rendering the card, resuming without duplication  requires a state machine, not a `useEffect`. Most AI-generated WebSocket chat code will fail here because it assumes a linear stream.
 
-### Task 2  Agent Trace Timeline
+#### Task 2  Agent Trace Timeline
 
 Build a collapsible side panel that shows every protocol event in real time as the agent works.
 
@@ -124,7 +220,7 @@ Build a collapsible side panel that shows every protocol event in real time as t
 - The timeline must not cause visible jank when events are arriving at 30+ per second (token streaming rate). If you are re-rendering the full list on every token, that is wrong.
 - Include a filter bar: filter by event type, search by content.
 
-### Task 3  Context Inspector
+#### Task 3  Context Inspector
 
 Build a context panel that shows what data the agent is currently operating on, with diffs.
 
@@ -137,7 +233,7 @@ Build a context panel that shows what data the agent is currently operating on, 
 
 **Why this is hard:** Diffing arbitrary nested JSON performantly, rendering it as a navigable tree, and keeping it responsive when the payload is half a megabyte  this requires understanding both algorithms and the DOM.
 
-### Task 4  Reconnection with State Recovery
+#### Task 4  Reconnection with State Recovery
 
 Implement connection lifecycle management that makes drops invisible to the user.
 
@@ -152,7 +248,7 @@ Implement connection lifecycle management that makes drops invisible to the user
 
 **Why this is hard:** Reconnection that actually works  not just reconnects but _recovers state_  requires tracking what the DOM has consumed, not just what the socket has received. Most reconnection code in tutorials handles the "reconnect" part but destroys the "recovery" part.
 
-### Task 5  Chaos Survival
+#### Task 5  Chaos Survival
 
 Enable chaos mode (`--mode chaos`) and record your screen (3–5 minutes) showing your application handling the following scenarios, labelling each as it happens:
 
@@ -166,7 +262,7 @@ This recording is **mandatory**. A submission without it will be treated as inco
 
 ---
 
-## Technical Constraints
+### Technical Constraints
 
 - **Framework:** Next.js 14+ (App Router). No Pages Router.
 - **Language:** TypeScript in strict mode (`"strict": true` in tsconfig). No `any` types outside a single, clearly documented escape hatch file. No `@ts-ignore`.
@@ -176,7 +272,7 @@ This recording is **mandatory**. A submission without it will be treated as inco
 
 ---
 
-## Deliverables
+### Deliverables
 
 Submit a repository (public Git repo or tarball) containing:
 
@@ -199,7 +295,7 @@ Submit a repository (public Git repo or tarball) containing:
 
 ---
 
-## Evaluation Criteria
+### Evaluation Criteria
 
 | Criteria | Weight | What we are checking |
 |---|---|---|
@@ -213,7 +309,7 @@ Submit a repository (public Git repo or tarball) containing:
 
 ---
 
-## What Will Get You Rejected
+### What Will Get You Rejected
 
 To be transparent about what we filter on:
 
@@ -224,7 +320,7 @@ To be transparent about what we filter on:
 
 ---
 
-## What Will Impress Us
+### What Will Impress Us
 
 Also being transparent here:
 
@@ -235,7 +331,7 @@ Also being transparent here:
 
 ---
 
-## Timeline
+### Timeline
 
 Implementation should take approximately 4–5 days. The scope is intentionally larger than what you might finish  we want to see what you prioritise.
 
@@ -243,7 +339,7 @@ Implementation should take approximately 4–5 days. The scope is intentionally 
 
 ---
 
-## Submission
+### Submission
 
 Email your repo link (or tarball) to **anuran@getalchemystai.com** with the subject line:
 
@@ -257,7 +353,7 @@ Include the link to your chaos mode screen recording in the email body.
 
 ---
 
-## Appendix: Quick Protocol Interaction Example
+### Appendix: Quick Protocol Interaction Example
 
 ```
 CLIENT  →  { "type": "USER_MESSAGE", "content": "Summarise the Q3 report" }
@@ -286,7 +382,6 @@ SERVER  ←  { "type": "STREAM_END", "seq": 42, "stream_id": "s_01" }
 SERVER  ←  { "type": "PING", "seq": 15, "challenge": "a1b2c3" }
 CLIENT  →  { "type": "PONG", "echo": "a1b2c3" }
 ```
-
 
 ### Quick Start
 
