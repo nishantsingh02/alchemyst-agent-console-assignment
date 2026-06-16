@@ -10,19 +10,9 @@ A production-grade, event-sourced telemetry dashboard designed to monitor and co
 
 ## System Architecture
 
-```mermaid
-graph TD
-    A[WebSocket Server] <-->|JSON Stream & ACKs| B(WebSocket Transport Hook)
-    B -->|Ingest Raw Event| C{Protocol Engine}
-    C -->|Store Out-of-Order| D[Sequence Buffer Map]
-    C -->|Filter Duplicates| E[Processed Seq Set]
-    C -->|Commit Ordered Event| F[Immutable Event Log]
-    F -->|requestAnimationFrame Batching| G(React UI Tree)
-    F -->|Context Snapshots| H[Diff Web Worker]
-    H -->|Calculate Diffs Off-Thread| G
-```
-
----
+<p align="center">
+  <img src="./assets/system.png" alt="System Architecture" width="900" />
+</p>
 
 ## Directory Structure
 *   `/agent-console`: Next.js 14 frontend console (TypeScript, Vanilla CSS, Neobrutalist design).
